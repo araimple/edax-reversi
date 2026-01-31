@@ -51,6 +51,42 @@ impl Board {
         self.opponent ^= flipped;
     }
 
+    /// Convert square index (0-63) to algebraic notation ("A1".."H8").
+    pub fn square_to_string(sq: usize) -> String {
+        let col = (b'A' + (sq % 8) as u8) as char;
+        let row = (b'1' + (sq / 8) as u8) as char;
+        format!("{}{}", col, row)
+    }
+
+    /// Render the board as a string.
+    /// `player_is_black`: if true, player='X'(black), opponent='O'(white).
+    pub fn to_board_string(&self, player_is_black: bool) -> String {
+        let (black, white) = if player_is_black {
+            (self.player, self.opponent)
+        } else {
+            (self.opponent, self.player)
+        };
+        let mut s = String::from("  A B C D E F G H\n");
+        for row in 0..8 {
+            s.push_str(&format!("{} ", row + 1));
+            for col in 0..8 {
+                let bit = 1u64 << (row * 8 + col);
+                if black & bit != 0 {
+                    s.push('X');
+                } else if white & bit != 0 {
+                    s.push('O');
+                } else {
+                    s.push('-');
+                }
+                if col < 7 {
+                    s.push(' ');
+                }
+            }
+            s.push('\n');
+        }
+        s
+    }
+
     pub fn count_player_discs(&self) -> u32 {
         self.player.count_ones()
     }
@@ -158,6 +194,33 @@ mod tests {
         assert!(moves != 0, "white should have moves after D3");
         // White should be able to play C3(18), E3(20), C5(34)
         assert!(moves & (1u64 << 18) != 0, "C3 should be legal for white");
+    }
+
+    #[test]
+    fn display_initial_board() {
+        let board = Board::new();
+        let s = board.to_board_string(true); // true = player is black
+        assert!(s.contains("  A B C D E F G H"));
+        assert!(s.contains("X"), "should contain X for black");
+        assert!(s.contains("O"), "should contain O for white");
+        assert!(s.contains("-"), "should contain - for empty");
+        // Row 4 should have . . . O X . . .
+        // Row 5 should have . . . X O . . .
+    }
+
+    #[test]
+    fn square_to_string_d3() {
+        assert_eq!(Board::square_to_string(19), "D3");
+    }
+
+    #[test]
+    fn square_to_string_a1() {
+        assert_eq!(Board::square_to_string(0), "A1");
+    }
+
+    #[test]
+    fn square_to_string_h8() {
+        assert_eq!(Board::square_to_string(63), "H8");
     }
 
     #[test]
