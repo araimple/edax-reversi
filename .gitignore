@@ -5,3 +5,6 @@ doc/
 *.7z
 
 .DS_Store
+
+# Rust
+edax-rs/target/
