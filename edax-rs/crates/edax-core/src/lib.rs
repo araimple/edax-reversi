@@ -1,6 +1,13 @@
 pub mod ai;
+pub mod bench;
 pub mod bit;
 pub mod board;
+pub mod book;
+pub mod eval;
 pub mod flip;
 pub mod game;
+pub mod hash;
+pub mod parallel;
 pub mod perft;
+pub mod protocol;
+pub mod search;

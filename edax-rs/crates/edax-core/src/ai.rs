@@ -1,5 +1,6 @@
 use crate::board::Board;
 use crate::flip;
+use crate::search::{Search, SearchOptions};
 
 /// Choose a move for the current player.
 pub trait Player {
@@ -98,6 +99,41 @@ impl Player for MobilityPlayer {
     }
 }
 
+/// Alpha-beta search player using the full search engine.
+pub struct SearchPlayer {
+    search: Search,
+}
+
+impl SearchPlayer {
+    pub fn new(depth: i32) -> Self {
+        SearchPlayer {
+            search: Search::new(SearchOptions {
+                depth,
+                time_limit_ms: 30000,
+                hash_size: 1 << 16,
+                verbose: false,
+            }),
+        }
+    }
+}
+
+impl Player for SearchPlayer {
+    fn choose_move(&mut self, board: &Board) -> usize {
+        let result = self.search.search(board);
+        if result.best_move >= 0 && result.best_move < 64 {
+            result.best_move as usize
+        } else {
+            // Fallback to first legal move
+            let moves = board.get_moves();
+            moves.trailing_zeros() as usize
+        }
+    }
+
+    fn name(&self) -> &str {
+        "Search"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,6 +161,15 @@ mod tests {
         let board = Board::new();
         let moves = board.get_moves();
         let mut player = MobilityPlayer;
+        let sq = player.choose_move(&board);
+        assert!(moves & (1u64 << sq) != 0, "must be a legal move");
+    }
+
+    #[test]
+    fn search_player_returns_legal_move() {
+        let board = Board::new();
+        let moves = board.get_moves();
+        let mut player = SearchPlayer::new(4);
         let sq = player.choose_move(&board);
         assert!(moves & (1u64 << sq) != 0, "must be a legal move");
     }
