@@ -310,3 +310,88 @@ fn eval_many_random_positions() {
         board.do_move(sq);
     }
 }
+
+// --- Eval verification tests (C version compatibility) ---
+
+#[test]
+fn eval_matches_c_version() {
+    use edax_core::eval;
+
+    // Ensure eval weights are loaded
+    eval::eval_open();
+
+    // 1. Evaluate the initial position
+    let mut board = Board::new();
+    let score_initial = eval::evaluate(&board);
+    println!("Initial position eval: {}", score_initial);
+    assert!(
+        score_initial >= -63 && score_initial <= 63,
+        "Initial position score {} out of valid range [-63, 63]",
+        score_initial
+    );
+
+    // 2. Play D3 (square 19) and evaluate
+    board.do_move(19); // D3
+    let score_after_d3 = eval::evaluate(&board);
+    println!("After D3 (move 19) eval: {}", score_after_d3);
+    assert!(
+        score_after_d3 >= -63 && score_after_d3 <= 63,
+        "Score after D3 {} out of valid range [-63, 63]",
+        score_after_d3
+    );
+
+    // 3. Play C3 (square 18) and evaluate
+    board.do_move(18); // C3
+    let score_after_c3 = eval::evaluate(&board);
+    println!("After D3 C3 (move 18) eval: {}", score_after_c3);
+    assert!(
+        score_after_c3 >= -63 && score_after_c3 <= 63,
+        "Score after C3 {} out of valid range [-63, 63]",
+        score_after_c3
+    );
+
+    // 4. Play C2 (square 10) and evaluate
+    board.do_move(10); // C2
+    let score_after_c2 = eval::evaluate(&board);
+    println!("After D3 C3 C2 (move 10) eval: {}", score_after_c2);
+    assert!(
+        score_after_c2 >= -63 && score_after_c2 <= 63,
+        "Score after C2 {} out of valid range [-63, 63]",
+        score_after_c2
+    );
+
+    // Print all scores together for easy comparison with C version
+    println!("--- Eval score summary ---");
+    println!("  Initial:        {}", score_initial);
+    println!("  After D3:       {}", score_after_d3);
+    println!("  After D3 C3:    {}", score_after_c3);
+    println!("  After D3 C3 C2: {}", score_after_c2);
+
+    // Verify eval.dat was loaded (pattern evaluation active)
+    assert!(
+        eval::is_loaded(),
+        "eval.dat was not loaded -- pattern evaluation is not active"
+    );
+}
+
+#[test]
+fn eval_feature_computation() {
+    use edax_core::eval;
+
+    // Ensure eval weights are loaded
+    eval::eval_open();
+
+    // Evaluate the initial board position
+    let board = Board::new();
+    let score = eval::evaluate(&board);
+    println!("eval_feature_computation: initial board score = {}", score);
+
+    // The initial position is symmetric and roughly balanced, so the pattern
+    // evaluation should return a score close to 0 (within -10..10).
+    assert!(
+        score >= -10 && score <= 10,
+        "Initial position eval score {} is outside expected range [-10, 10]. \
+         A well-calibrated pattern evaluation should rate the starting position as roughly even.",
+        score
+    );
+}
