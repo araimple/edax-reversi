@@ -101,6 +101,144 @@ impl Board {
 
     /// Final score = player_discs - opponent_discs.
     /// Empty squares are awarded to the player with more discs (standard Othello rule).
+    /// Compute the number of stable discs for `player` against `opponent`.
+    /// A disc is stable if it can never be flipped in any future game state.
+    /// This is a lower bound (conservative estimate) used for stability cutoff.
+    pub fn get_stability(player: u64, opponent: u64) -> i32 {
+        let disc = player | opponent;
+        let central_mask = player & 0x007e7e7e7e7e7e00u64;
+
+        // Full lines in each direction
+        let full_h = Self::get_full_lines(disc, 1);
+        let full_v = Self::get_full_lines(disc, 8);
+        let full_d7 = Self::get_full_lines(disc, 7);
+        let full_d9 = Self::get_full_lines(disc, 9);
+
+        // Stable edges (corner-anchored runs)
+        let mut new_stable = Self::get_stable_edge(player, opponent);
+
+        // Add squares that are on full lines in ALL 4 directions
+        new_stable |= full_h & full_v & full_d7 & full_d9 & central_mask;
+
+        // Propagate: a disc is stable if in each direction, either
+        // the line is full OR an adjacent disc is stable
+        let mut stable = 0u64;
+        while (new_stable & !stable) != 0 {
+            stable |= new_stable;
+            let stable_h = (stable >> 1) | (stable << 1) | full_h;
+            let stable_v = (stable >> 8) | (stable << 8) | full_v;
+            let stable_d7 = (stable >> 7) | (stable << 7) | full_d7;
+            let stable_d9 = (stable >> 9) | (stable << 9) | full_d9;
+            new_stable = stable_h & stable_v & stable_d7 & stable_d9 & central_mask;
+        }
+
+        stable.count_ones() as i32
+    }
+
+    /// Get full lines in the given direction.
+    /// Returns a mask of squares that are on a completely filled line in direction `dir`.
+    fn get_full_lines(line: u64, dir: u32) -> u64 {
+        let edge: u64 = line & 0xff818181818181ffu64;
+        let mut full = line & (((line >> dir) & (line << dir)) | edge);
+        full &= ((full >> dir) & (full << dir)) | edge;
+        full &= ((full >> dir) & (full << dir)) | edge;
+        full &= ((full >> dir) & (full << dir)) | edge;
+        full &= ((full >> dir) & (full << dir)) | edge;
+        (full >> dir) & (full << dir)
+    }
+
+    /// Compute stable edge discs using corner-anchored runs.
+    /// For each of the 4 edges, find continuous runs of player discs from corners.
+    fn get_stable_edge(player: u64, opponent: u64) -> u64 {
+        let mut stable = 0u64;
+
+        // Top edge (row 1, bits 0-7)
+        let p_top = (player & 0xFF) as u8;
+        let o_top = (opponent & 0xFF) as u8;
+        stable |= Self::edge_stable_line(p_top, o_top) as u64;
+
+        // Bottom edge (row 8, bits 56-63)
+        let p_bot = (player >> 56) as u8;
+        let o_bot = (opponent >> 56) as u8;
+        stable |= (Self::edge_stable_line(p_bot, o_bot) as u64) << 56;
+
+        // Left edge (column A, bits 0,8,16,...,56)
+        let p_left = Self::pack_col_a(player);
+        let o_left = Self::pack_col_a(opponent);
+        let s_left = Self::edge_stable_line(p_left, o_left);
+        stable |= Self::unpack_col_a(s_left);
+
+        // Right edge (column H, bits 7,15,23,...,63)
+        let p_right = Self::pack_col_h(player);
+        let o_right = Self::pack_col_h(opponent);
+        let s_right = Self::edge_stable_line(p_right, o_right);
+        stable |= Self::unpack_col_h(s_right);
+
+        stable & player
+    }
+
+    /// Compute stable discs on a single edge (8-bit line).
+    /// Returns corner-anchored stable player discs.
+    fn edge_stable_line(p: u8, o: u8) -> u8 {
+        let full = p | o;
+        // If the edge is completely full, all player discs are stable
+        if full == 0xFF {
+            return p;
+        }
+        let mut stable = 0u8;
+        // From left: consecutive P discs from bit 0
+        for i in 0..8u8 {
+            if (p >> i) & 1 == 1 {
+                stable |= 1 << i;
+            } else {
+                break;
+            }
+        }
+        // From right: consecutive P discs from bit 7
+        for i in (0..8u8).rev() {
+            if (p >> i) & 1 == 1 {
+                stable |= 1 << i;
+            } else {
+                break;
+            }
+        }
+        stable
+    }
+
+    /// Pack column A (bits 0,8,16,...,56) into 8 bits.
+    #[inline]
+    fn pack_col_a(bb: u64) -> u8 {
+        ((bb & 0x0101010101010101u64).wrapping_mul(0x0102040810204080u64) >> 56) as u8
+    }
+
+    /// Pack column H (bits 7,15,23,...,63) into 8 bits.
+    #[inline]
+    fn pack_col_h(bb: u64) -> u8 {
+        ((bb & 0x8080808080808080u64).wrapping_mul(0x0002040810204081u64) >> 56) as u8
+    }
+
+    /// Unpack 8 bits to column A (bits 0,8,16,...,56).
+    fn unpack_col_a(val: u8) -> u64 {
+        let mut result = 0u64;
+        for i in 0..8 {
+            if (val >> i) & 1 != 0 {
+                result |= 1u64 << (i * 8);
+            }
+        }
+        result
+    }
+
+    /// Unpack 8 bits to column H (bits 7,15,23,...,63).
+    fn unpack_col_h(val: u8) -> u64 {
+        let mut result = 0u64;
+        for i in 0..8 {
+            if (val >> i) & 1 != 0 {
+                result |= 1u64 << (i * 8 + 7);
+            }
+        }
+        result
+    }
+
     pub fn score(&self) -> i32 {
         let p = self.count_player_discs() as i32;
         let o = self.count_opponent_discs() as i32;
@@ -221,6 +359,52 @@ mod tests {
     #[test]
     fn square_to_string_h8() {
         assert_eq!(Board::square_to_string(63), "H8");
+    }
+
+    #[test]
+    fn stability_corners_are_stable() {
+        // All 4 corners filled by player
+        let player = (1u64 << 0) | (1u64 << 7) | (1u64 << 56) | (1u64 << 63);
+        let opponent = 0u64;
+        let stable = Board::get_stability(player, opponent);
+        assert_eq!(stable, 4, "4 corner discs should be stable");
+    }
+
+    #[test]
+    fn stability_full_edge() {
+        // Full top edge: player has first 4, opponent has last 4
+        let player = 0x0Fu64; // A1-D1
+        let opponent = 0xF0u64; // E1-H1
+        let stable = Board::get_stability(player, opponent);
+        assert!(stable >= 4, "full edge player discs should be stable, got {}", stable);
+    }
+
+    #[test]
+    fn stability_empty_board_zero() {
+        // Nearly empty board
+        let player = (1u64 << 28) | (1u64 << 35); // E4, D5
+        let opponent = (1u64 << 27) | (1u64 << 36); // D4, E5
+        let stable = Board::get_stability(player, opponent);
+        assert_eq!(stable, 0, "no discs should be stable on initial board");
+    }
+
+    #[test]
+    fn stability_full_board() {
+        // Full board, player has bottom half
+        let player = 0x00000000FFFFFFFFu64;
+        let opponent = 0xFFFFFFFF00000000u64;
+        let stable = Board::get_stability(player, opponent);
+        // All discs are stable on a full board
+        assert_eq!(stable, 32, "all player discs should be stable on full board");
+    }
+
+    #[test]
+    fn stability_corner_run() {
+        // Player has A1, B1, C1 (corner run on top edge)
+        let player = 0x07u64;
+        let opponent = 0x08u64; // D1 is opponent
+        let stable = Board::get_stability(player, opponent);
+        assert!(stable >= 3, "A1-C1 corner run should be stable, got {}", stable);
     }
 
     #[test]

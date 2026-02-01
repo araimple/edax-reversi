@@ -60,6 +60,24 @@ fn scan_and_flip<const POSITIVE: bool>(
     }
 }
 
+/// Count the number of flipped discs for the last move (1-empty board).
+///
+/// Returns **twice** the number of flipped discs (matching C convention for
+/// efficient disc-difference computation in endgame solvers).
+///
+/// `x`: square index (0-63) of the last empty square.
+/// `player`: bitboard of the player about to move.
+///
+/// In the 1-empty case, the opponent occupies all squares except `x` and
+/// the player's squares, so we don't need an explicit opponent bitboard.
+pub fn count_last_flip(x: usize, player: u64) -> i32 {
+    debug_assert!(x < 64);
+    // Opponent = all occupied squares that aren't player's (the only empty is x)
+    let opponent = !player & !(1u64 << x);
+    let flipped = flip(x, player, opponent);
+    2 * flipped.count_ones() as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +145,74 @@ mod tests {
         let player = 1u64 << 18;
         let opponent = 1u64 << 9;
         assert_eq!(flip(0, player, opponent), 1u64 << 9);
+    }
+
+    #[test]
+    fn count_last_flip_matches_flip_function() {
+        // Property test: count_last_flip(x, player) should equal
+        // 2 * flip(x, player, opponent).count_ones()
+        // where opponent = !player & !(1<<x)  (1-empty board)
+
+        // Case 1: All player except column A, empty at A1(0)
+        let player = 0xFEFEFEFEFEFEFEFEu64;
+        let x = 0usize;
+        let opponent = !player & !(1u64 << x);
+        let expected = 2 * flip(x, player, opponent).count_ones() as i32;
+        assert_eq!(count_last_flip(x, player), expected);
+    }
+
+    #[test]
+    fn count_last_flip_center_square() {
+        // Empty at D4(27), player has all edges and some center
+        let x = 27usize;
+        let player = 0xFF818181818181FFu64 & !(1u64 << x); // all edges
+        let opponent = !player & !(1u64 << x);
+        let expected = 2 * flip(x, player, opponent).count_ones() as i32;
+        assert_eq!(count_last_flip(x, player), expected);
+    }
+
+    #[test]
+    fn count_last_flip_no_flips() {
+        // Empty at H8(63), player has nothing adjacent to bracket
+        let x = 63usize;
+        // Player has only A1(0) - way too far to bracket anything
+        let player = 1u64;
+        let opponent = !player & !(1u64 << x);
+        let expected = 2 * flip(x, player, opponent).count_ones() as i32;
+        assert_eq!(count_last_flip(x, player), expected);
+    }
+
+    #[test]
+    fn count_last_flip_all_directions() {
+        // Empty at E5(36), player surrounds opponent discs in multiple directions
+        let x = 36usize;
+        // Player has the ring around a 3x3 center, opponent has the inner ring
+        // This creates flips in all 8 directions
+        let player = 0xFFFF_FFFF_FFFF_FFFFu64
+            & !(1u64 << 27) & !(1u64 << 28) & !(1u64 << 29)
+            & !(1u64 << 35) & !(1u64 << 36) & !(1u64 << 37)
+            & !(1u64 << 43) & !(1u64 << 44) & !(1u64 << 45);
+        // Opponent = all the inner ring except x
+        let opponent = !player & !(1u64 << x);
+        let expected = 2 * flip(x, player, opponent).count_ones() as i32;
+        assert_eq!(count_last_flip(x, player), expected);
+    }
+
+    #[test]
+    fn count_last_flip_every_square() {
+        // Exhaustive: for a fixed player pattern, verify all 64 squares
+        let player = 0xAA55AA55AA55AA55u64; // checkerboard pattern
+        for x in 0..64 {
+            if player & (1u64 << x) != 0 {
+                continue; // skip squares that are player
+            }
+            let opponent = !player & !(1u64 << x);
+            let expected = 2 * flip(x, player, opponent).count_ones() as i32;
+            assert_eq!(
+                count_last_flip(x, player), expected,
+                "mismatch at square {} ({})",
+                x, super::super::board::Board::square_to_string(x)
+            );
+        }
     }
 }
