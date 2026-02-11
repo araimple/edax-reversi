@@ -636,6 +636,263 @@ pub fn is_loaded() -> bool {
 }
 
 // ============================================================
+// Incremental evaluation (EvalState)
+// ============================================================
+
+/// Maximum number of features any single square participates in.
+const MAX_FEATURES_PER_SQUARE: usize = 16;
+
+/// Entry in the coordinate-to-feature mapping.
+/// For each square, lists which features it participates in and with what weight.
+#[derive(Clone, Copy)]
+struct CoordToFeatureEntry {
+    /// Number of features this square participates in.
+    n: usize,
+    /// (feature_index, power_of_3_weight) pairs.
+    feature: [(usize, i32); MAX_FEATURES_PER_SQUARE],
+}
+
+impl Default for CoordToFeatureEntry {
+    fn default() -> Self {
+        CoordToFeatureEntry {
+            n: 0,
+            feature: [(0, 0); MAX_FEATURES_PER_SQUARE],
+        }
+    }
+}
+
+/// Build the inverse mapping: for each square, which features it participates in.
+fn build_eval_x2f() -> [CoordToFeatureEntry; 64] {
+    let mut x2f = [CoordToFeatureEntry::default(); 64];
+
+    for fi in 0..EVAL_N_FEATURE {
+        let n_sq = EVAL_N_SQUARE[fi];
+        if n_sq == 0 {
+            continue; // scalar feature
+        }
+        // Power of 3 starts at 3^(n_sq-1) for position 0
+        let mut power = 1i32;
+        for _ in 1..n_sq {
+            power *= 3;
+        }
+
+        for j in 0..n_sq {
+            let sq = EVAL_F2X[fi][j];
+            if sq >= 0 && sq < 64 {
+                let sq = sq as usize;
+                let entry = &mut x2f[sq];
+                if entry.n < MAX_FEATURES_PER_SQUARE {
+                    entry.feature[entry.n] = (fi, power);
+                    entry.n += 1;
+                }
+            }
+            // Next position has power / 3
+            if j + 1 < n_sq {
+                power /= 3;
+            }
+        }
+    }
+
+    x2f
+}
+
+/// Global coordinate-to-feature mapping, built once.
+static EVAL_X2F: std::sync::OnceLock<[CoordToFeatureEntry; 64]> = std::sync::OnceLock::new();
+
+fn get_eval_x2f() -> &'static [CoordToFeatureEntry; 64] {
+    EVAL_X2F.get_or_init(build_eval_x2f)
+}
+
+/// Incremental evaluation state.
+/// Maintains the 47 feature indices and player perspective for efficient
+/// update/restore during search without full recomputation.
+#[derive(Clone)]
+pub struct EvalState {
+    /// Feature indices (including EVAL_OFFSET, directly index weight array).
+    pub feature: [usize; EVAL_N_FEATURE],
+    /// Current player perspective: 0 = BLACK's view, 1 = WHITE's view.
+    /// After a move, this toggles. Determines which weight table to use.
+    pub player: usize,
+}
+
+impl EvalState {
+    /// Create a new EvalState from a board position.
+    /// The board's player is treated as "player 0" in the ternary encoding.
+    pub fn new(board: &Board) -> Self {
+        EvalState {
+            feature: eval_set(board),
+            player: 0,
+        }
+    }
+
+    /// Update features after a move is made.
+    /// `sq`: the square played (0-63).
+    /// `flipped`: bitboard of flipped discs.
+    ///
+    /// The ternary encoding is absolute: 0=BLACK, 1=WHITE, 2=empty.
+    /// When player=0 (BLACK moves): placed 2->0 (delta=-2), flipped 1->0 (delta=-1)
+    /// When player=1 (WHITE moves): placed 2->1 (delta=-1), flipped 0->1 (delta=+1)
+    pub fn update(&mut self, sq: usize, flipped: u64) {
+        let x2f = get_eval_x2f();
+
+        if self.player == 0 {
+            // BLACK is moving
+            // Placed disc: empty(2) -> BLACK(0), delta = -2 * weight
+            let entry = &x2f[sq];
+            for k in 0..entry.n {
+                let (fi, weight) = entry.feature[k];
+                self.feature[fi] = (self.feature[fi] as i32 - 2 * weight) as usize;
+            }
+
+            // Flipped discs: WHITE(1) -> BLACK(0), delta = -1 * weight
+            let mut bits = flipped;
+            while bits != 0 {
+                let x = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let entry = &x2f[x];
+                for k in 0..entry.n {
+                    let (fi, weight) = entry.feature[k];
+                    self.feature[fi] = (self.feature[fi] as i32 - weight) as usize;
+                }
+            }
+        } else {
+            // WHITE is moving
+            // Placed disc: empty(2) -> WHITE(1), delta = -1 * weight
+            let entry = &x2f[sq];
+            for k in 0..entry.n {
+                let (fi, weight) = entry.feature[k];
+                self.feature[fi] = (self.feature[fi] as i32 - weight) as usize;
+            }
+
+            // Flipped discs: BLACK(0) -> WHITE(1), delta = +1 * weight
+            let mut bits = flipped;
+            while bits != 0 {
+                let x = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let entry = &x2f[x];
+                for k in 0..entry.n {
+                    let (fi, weight) = entry.feature[k];
+                    self.feature[fi] = (self.feature[fi] as i32 + weight) as usize;
+                }
+            }
+        }
+
+        // Toggle player
+        self.player ^= 1;
+    }
+
+    /// Restore features after undoing a move.
+    /// Must be called with the same sq and flipped that were passed to update().
+    pub fn restore(&mut self, sq: usize, flipped: u64) {
+        // Toggle player first (reverse of update which toggles last)
+        self.player ^= 1;
+
+        let x2f = get_eval_x2f();
+
+        if self.player == 0 {
+            // Undoing BLACK's move
+            // Placed disc: BLACK(0) -> empty(2), delta = +2 * weight
+            let entry = &x2f[sq];
+            for k in 0..entry.n {
+                let (fi, weight) = entry.feature[k];
+                self.feature[fi] = (self.feature[fi] as i32 + 2 * weight) as usize;
+            }
+
+            // Flipped discs: BLACK(0) -> WHITE(1), delta = +1 * weight
+            let mut bits = flipped;
+            while bits != 0 {
+                let x = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let entry = &x2f[x];
+                for k in 0..entry.n {
+                    let (fi, weight) = entry.feature[k];
+                    self.feature[fi] = (self.feature[fi] as i32 + weight) as usize;
+                }
+            }
+        } else {
+            // Undoing WHITE's move
+            // Placed disc: WHITE(1) -> empty(2), delta = +1 * weight
+            let entry = &x2f[sq];
+            for k in 0..entry.n {
+                let (fi, weight) = entry.feature[k];
+                self.feature[fi] = (self.feature[fi] as i32 + weight) as usize;
+            }
+
+            // Flipped discs: WHITE(1) -> BLACK(0), delta = -1 * weight
+            let mut bits = flipped;
+            while bits != 0 {
+                let x = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let entry = &x2f[x];
+                for k in 0..entry.n {
+                    let (fi, weight) = entry.feature[k];
+                    self.feature[fi] = (self.feature[fi] as i32 - weight) as usize;
+                }
+            }
+        }
+    }
+
+    /// Handle a pass move: just toggle the player perspective.
+    pub fn pass(&mut self) {
+        self.player ^= 1;
+    }
+
+    /// Compute the evaluation score from the current feature state.
+    /// Returns score in range [-63, 63].
+    ///
+    /// When player=1, applies opponent_feature to swap player/opponent encoding
+    /// in the feature indices before weight lookup (equivalent to C's dual weight tables).
+    pub fn score(&self, n_empties: u32) -> i32 {
+        let weights = EVAL_WEIGHTS.get_or_init(|| {
+            if let Some(path) = find_eval_dat() {
+                load_eval(&path).ok()
+            } else {
+                None
+            }
+        });
+
+        if let Some(w) = weights {
+            let ply = (60u32.saturating_sub(n_empties)) as usize;
+            let ply = ply.min(EVAL_N_PLY - 1);
+            let wt = &w.weights[ply * EVAL_N_WEIGHT..];
+
+            let mut score: i32 = 0;
+
+            if self.player == 0 {
+                // Direct lookup
+                for i in 0..EVAL_N_FEATURE {
+                    score += wt[self.feature[i]] as i32;
+                }
+            } else {
+                // Apply opponent_feature transformation for player=1
+                for i in 0..EVAL_N_FEATURE {
+                    let n_sq = EVAL_N_SQUARE[i];
+                    if n_sq == 0 {
+                        // Scalar feature
+                        score += wt[self.feature[i]] as i32;
+                    } else {
+                        let f = self.feature[i] - EVAL_OFFSET[i];
+                        let f_opp = opponent_feature(f, n_sq);
+                        score += wt[f_opp + EVAL_OFFSET[i]] as i32;
+                    }
+                }
+            }
+
+            if score > 0 {
+                score += 64;
+            } else {
+                score -= 64;
+            }
+            score /= 128;
+
+            score.clamp(-63, 63)
+        } else {
+            0 // Fallback if no weights loaded
+        }
+    }
+}
+
+// ============================================================
 // Fallback heuristic evaluation (used when eval.dat is unavailable)
 // ============================================================
 
@@ -911,5 +1168,228 @@ mod tests {
                 score2
             );
         }
+    }
+
+    // ================================================================
+    // Incremental eval tests (TDD)
+    // ================================================================
+
+    #[test]
+    fn eval_state_init_matches_eval_set() {
+        let board = Board::new();
+        let state = EvalState::new(&board);
+        let features = eval_set(&board);
+        for i in 0..EVAL_N_FEATURE {
+            assert_eq!(state.feature[i], features[i],
+                "feature {} mismatch: state={}, eval_set={}",
+                i, state.feature[i], features[i]);
+        }
+        assert_eq!(state.player, 0);
+    }
+
+    #[test]
+    fn eval_state_update_then_restore_is_identity() {
+        let board = Board::new();
+        let mut state = EvalState::new(&board);
+        let original_features = state.feature;
+        let original_player = state.player;
+
+        // Make a move
+        let sq = 19usize; // D3
+        let flipped = crate::flip::flip(sq, board.player, board.opponent);
+        state.update(sq, flipped);
+
+        // Features should have changed
+        assert_ne!(state.feature, original_features);
+        assert_eq!(state.player, 1); // player toggled
+
+        // Restore
+        state.restore(sq, flipped);
+
+        // Should be back to original
+        assert_eq!(state.feature, original_features);
+        assert_eq!(state.player, original_player);
+    }
+
+    #[test]
+    fn eval_state_update_score_matches_fresh() {
+        // Note: Incremental update uses absolute encoding (BLACK=0, WHITE=1),
+        // while fresh EvalState::new uses relative encoding (player=0, opponent=1).
+        // The feature VALUES differ, but the SCORES should match due to
+        // opponent_feature transformation in score().
+        if !is_loaded() {
+            eval_open();
+        }
+        if !is_loaded() {
+            return; // Skip if no eval.dat
+        }
+
+        let mut board = Board::new();
+        let mut state = EvalState::new(&board);
+
+        // Make a move via state.update
+        let sq = 19usize; // D3
+        let flipped = crate::flip::flip(sq, board.player, board.opponent);
+        state.update(sq, flipped);
+
+        // Make the same move on board
+        board.do_move(sq);
+
+        // Create fresh state from updated board
+        let fresh_state = EvalState::new(&board);
+
+        // Scores should match (even though feature encodings differ)
+        let n_empties = board.empties();
+        let score_incremental = state.score(n_empties);
+        let score_fresh = fresh_state.score(n_empties);
+
+        assert_eq!(score_incremental, score_fresh,
+            "score mismatch after update: incremental={}, fresh={}",
+            score_incremental, score_fresh);
+    }
+
+    #[test]
+    fn eval_state_pass_toggles_player() {
+        let board = Board::new();
+        let mut state = EvalState::new(&board);
+        assert_eq!(state.player, 0);
+
+        state.pass();
+        assert_eq!(state.player, 1);
+
+        state.pass();
+        assert_eq!(state.player, 0);
+    }
+
+    #[test]
+    fn eval_state_score_matches_evaluate() {
+        if !is_loaded() {
+            eval_open();
+        }
+        if !is_loaded() {
+            return; // Skip if no eval.dat
+        }
+
+        let board = Board::new();
+        let state = EvalState::new(&board);
+
+        let score_incremental = state.score(board.empties());
+        let score_full = evaluate(&board);
+
+        assert_eq!(score_incremental, score_full,
+            "initial: incremental={}, full={}", score_incremental, score_full);
+
+        // After a move - test INCREMENTAL update (not fresh init)
+        let mut board2 = board;
+        let mut state2 = EvalState::new(&board);
+        let sq = 19usize;
+        let flipped = crate::flip::flip(sq, board2.player, board2.opponent);
+        state2.update(sq, flipped);
+        board2.do_move(sq);
+
+        let score_inc2 = state2.score(board2.empties());
+        let score_full2 = evaluate(&board2);
+
+        assert_eq!(score_inc2, score_full2,
+            "after D3 (incremental): score={}, full={}", score_inc2, score_full2);
+    }
+
+    #[test]
+    fn eval_x2f_built_correctly() {
+        // EVAL_X2F should map each square to its features
+        // Square 0 (A1) should participate in multiple features
+        let x2f = build_eval_x2f();
+        assert!(x2f[0].n > 0, "A1 should participate in some features");
+
+        // Square 27 (D4) is central, should be in many features
+        assert!(x2f[27].n > 0, "D4 should participate in some features");
+
+        // Verify round-trip: for each feature, each square should map back
+        for fi in 0..EVAL_N_FEATURE {
+            let n_sq = EVAL_N_SQUARE[fi];
+            for j in 0..n_sq {
+                let sq = EVAL_F2X[fi][j];
+                if sq >= 0 {
+                    let sq = sq as usize;
+                    // This square should have feature fi in its list
+                    let entry = &x2f[sq];
+                    let found = (0..entry.n).any(|k| entry.feature[k].0 == fi);
+                    assert!(found, "square {} should have feature {} in x2f", sq, fi);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn eval_state_multiple_moves_score_correct() {
+        // Test incremental update through a sequence of moves
+        if !is_loaded() {
+            eval_open();
+        }
+        if !is_loaded() {
+            return;
+        }
+
+        let mut board = Board::new();
+        let mut state = EvalState::new(&board);
+
+        // Play a short game
+        let moves = [19, 18, 10, 34]; // D3, C3, C2, C5
+
+        for &sq in &moves {
+            let moves_available = board.get_moves();
+            if moves_available == 0 {
+                board.pass();
+                state.pass();
+                continue;
+            }
+            if moves_available & (1u64 << sq) == 0 {
+                continue; // Skip invalid move
+            }
+
+            let flipped = crate::flip::flip(sq, board.player, board.opponent);
+            state.update(sq, flipped);
+            board.do_move(sq);
+
+            // Verify score matches at each step
+            let score_inc = state.score(board.empties());
+            let score_full = evaluate(&board);
+            assert_eq!(score_inc, score_full,
+                "score mismatch after move {}: incremental={}, full={}",
+                sq, score_inc, score_full);
+        }
+    }
+
+    #[test]
+    fn eval_state_update_restore_multiple() {
+        // Test multiple update/restore cycles
+        let board = Board::new();
+        let mut state = EvalState::new(&board);
+        let original = state.clone();
+
+        let moves = [19, 18, 10]; // D3, C3, C2
+        let mut boards = vec![board];
+        let mut flips = vec![];
+
+        // Make moves
+        for &sq in &moves {
+            let b = boards.last().unwrap();
+            let flipped = crate::flip::flip(sq, b.player, b.opponent);
+            flips.push(flipped);
+            state.update(sq, flipped);
+
+            let mut new_board = *b;
+            new_board.do_move(sq);
+            boards.push(new_board);
+        }
+
+        // Undo moves in reverse
+        for (i, &sq) in moves.iter().enumerate().rev() {
+            state.restore(sq, flips[i]);
+        }
+
+        // Should be back to original
+        assert_eq!(state.feature, original.feature);
+        assert_eq!(state.player, original.player);
     }
 }
