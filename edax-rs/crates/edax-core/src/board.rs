@@ -251,6 +251,17 @@ impl Board {
             0
         }
     }
+
+    /// Check if the game is over (neither player can move).
+    pub fn is_game_over(&self) -> bool {
+        if self.get_moves() != 0 {
+            return false;
+        }
+        // Check if opponent has moves
+        let mut passed = *self;
+        passed.pass();
+        passed.get_moves() == 0
+    }
 }
 
 #[cfg(test)]
@@ -419,5 +430,192 @@ mod tests {
         let white = (1u64 << 27) | (1u64 << 36); // D4, E5
         assert_eq!(board.player, black, "player (black) mismatch");
         assert_eq!(board.opponent, white, "opponent (white) mismatch");
+    }
+
+    // ================================================================
+    // Additional tests matching C test suite
+    // ================================================================
+
+    #[test]
+    fn flip_c4_flips_d4() {
+        let board = Board::new();
+        // C4 (26) should flip D4 (27) in the +1 (right) direction
+        let flipped = crate::flip::flip(26, board.player, board.opponent);
+        assert_eq!(flipped, 1u64 << 27, "C4 should flip D4");
+        assert_eq!(flipped.count_ones(), 1, "C4 flips 1 disc");
+    }
+
+    #[test]
+    fn flip_f5_flips_e5() {
+        let board = Board::new();
+        // F5 (37) should flip E5 (36) in the -1 (left) direction
+        let flipped = crate::flip::flip(37, board.player, board.opponent);
+        assert_eq!(flipped, 1u64 << 36, "F5 should flip E5");
+        assert_eq!(flipped.count_ones(), 1, "F5 flips 1 disc");
+    }
+
+    #[test]
+    fn flip_e6_flips_e5() {
+        let board = Board::new();
+        // E6 (44) should flip E5 (36) in the -8 (up) direction
+        let flipped = crate::flip::flip(44, board.player, board.opponent);
+        assert_eq!(flipped, 1u64 << 36, "E6 should flip E5");
+        assert_eq!(flipped.count_ones(), 1, "E6 flips 1 disc");
+    }
+
+    #[test]
+    fn flip_d3_flips_d4() {
+        let board = Board::new();
+        // D3 (19) should flip D4 (27) in the +8 (down) direction
+        let flipped = crate::flip::flip(19, board.player, board.opponent);
+        assert_eq!(flipped, 1u64 << 27, "D3 should flip D4");
+        assert_eq!(flipped.count_ones(), 1, "D3 flips 1 disc");
+    }
+
+    #[test]
+    fn flip_illegal_move_returns_zero() {
+        let board = Board::new();
+        // A1 (0) is an illegal move from initial position
+        let flipped = crate::flip::flip(0, board.player, board.opponent);
+        assert_eq!(flipped, 0, "A1 is illegal, no flips");
+    }
+
+    #[test]
+    fn no_horizontal_wrap() {
+        // Player at H4 (31), opponent at A4 (24) - should NOT be able to flip
+        let player = 1u64 << 31;   // H4
+        let opponent = 1u64 << 24; // A4
+        let board = Board { player, opponent };
+        let moves = board.get_moves();
+        // Should have no moves that wrap horizontally
+        assert_eq!(
+            moves & 0xFF000000, 0,
+            "no horizontal wrap should occur in row 4"
+        );
+    }
+
+    #[test]
+    fn flip_long_vertical_chain() {
+        // Player at E1 (4), opponent at E2-E7
+        let player = 1u64 << 4;
+        let opponent = (1u64 << 12) | (1u64 << 20) | (1u64 << 28)
+            | (1u64 << 36) | (1u64 << 44) | (1u64 << 52);
+        let flipped = crate::flip::flip(60, player, opponent); // E8
+        assert_eq!(flipped.count_ones(), 6, "E8 should flip 6 discs");
+    }
+
+    #[test]
+    fn flip_long_diagonal_chain() {
+        // Player at A1 (0), opponent along diagonal B2-G7
+        let player = 1u64;
+        let opponent = (1u64 << 9) | (1u64 << 18) | (1u64 << 27)
+            | (1u64 << 36) | (1u64 << 45) | (1u64 << 54);
+        let flipped = crate::flip::flip(63, player, opponent); // H8
+        assert_eq!(flipped.count_ones(), 6, "H8 should flip 6 discs diagonally");
+    }
+
+    #[test]
+    fn game_over_full_board() {
+        // Full board - game is over
+        let player = 0x00000000FFFFFFFFu64;
+        let opponent = 0xFFFFFFFF00000000u64;
+        let board = Board { player, opponent };
+        assert!(board.is_game_over(), "full board should be game over");
+    }
+
+    #[test]
+    fn game_over_isolated_corners() {
+        // Isolated corners - no moves for either player
+        let player = 1u64;           // A1
+        let opponent = 1u64 << 63;   // H8
+        let board = Board { player, opponent };
+        assert!(board.is_game_over(), "isolated corners should be game over");
+    }
+
+    #[test]
+    fn not_game_over_initial() {
+        let board = Board::new();
+        assert!(!board.is_game_over(), "initial position is not game over");
+    }
+
+    #[test]
+    fn mobility_initial() {
+        let board = Board::new();
+        assert_eq!(board.get_moves().count_ones(), 4, "initial mobility is 4");
+    }
+
+    #[test]
+    fn mobility_after_d3() {
+        let mut board = Board::new();
+        board.do_move(19); // D3
+        // After D3, opponent (white) should have 3 moves
+        assert_eq!(board.get_moves().count_ones(), 3, "after D3, opponent has 3 moves");
+    }
+
+    #[test]
+    fn score_all_player() {
+        let board = Board {
+            player: 0xFFFFFFFFFFFFFFFFu64,
+            opponent: 0,
+        };
+        assert_eq!(board.score(), 64, "all player = +64");
+    }
+
+    #[test]
+    fn score_all_opponent() {
+        let board = Board {
+            player: 0,
+            opponent: 0xFFFFFFFFFFFFFFFFu64,
+        };
+        assert_eq!(board.score(), -64, "all opponent = -64");
+    }
+
+    #[test]
+    fn score_equal() {
+        let board = Board {
+            player: 0x00000000FFFFFFFFu64,
+            opponent: 0xFFFFFFFF00000000u64,
+        };
+        assert_eq!(board.score(), 0, "equal discs = 0");
+    }
+
+    #[test]
+    fn move_sequence() {
+        let mut board = Board::new();
+        // Play a known opening: D3, C3, C4, C5
+        let moves = [19, 18, 26, 34];
+        for &sq in &moves {
+            let legal = board.get_moves();
+            assert!(
+                legal & (1u64 << sq) != 0,
+                "move {} should be legal",
+                Board::square_to_string(sq)
+            );
+            board.do_move(sq);
+        }
+        // After 4 moves: started with 4, added 4
+        let total = board.player.count_ones() + board.opponent.count_ones();
+        assert_eq!(total, 8, "8 discs after 4 moves");
+    }
+
+    #[test]
+    fn get_moves_all_8_directions() {
+        // Player at D4 (27), opponent surrounding in all 8 directions
+        let player = 1u64 << 27;  // D4 center
+        let opponent = (1u64 << 18) | (1u64 << 19) | (1u64 << 20)   // C3, D3, E3
+            | (1u64 << 26) | (1u64 << 28)                           // C4, E4
+            | (1u64 << 34) | (1u64 << 35) | (1u64 << 36);           // C5, D5, E5
+        let board = Board { player, opponent };
+        let moves = board.get_moves();
+
+        // Should be able to move to all 8 positions beyond opponent ring
+        assert!(moves & (1u64 << 9) != 0, "B2 (NW) should be legal");
+        assert!(moves & (1u64 << 11) != 0, "D2 (N) should be legal");
+        assert!(moves & (1u64 << 13) != 0, "F2 (NE) should be legal");
+        assert!(moves & (1u64 << 25) != 0, "B4 (W) should be legal");
+        assert!(moves & (1u64 << 29) != 0, "F4 (E) should be legal");
+        assert!(moves & (1u64 << 41) != 0, "B6 (SW) should be legal");
+        assert!(moves & (1u64 << 43) != 0, "D6 (S) should be legal");
+        assert!(moves & (1u64 << 45) != 0, "F6 (SE) should be legal");
     }
 }
