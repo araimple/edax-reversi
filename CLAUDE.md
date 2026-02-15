@@ -4,7 +4,12 @@
 
 Edax is a high-performance Othello (Reversi) engine written in C99. It uses bitboard representation, parallel search (YBWC), and an opening book with learning capability. Author: Richard Delorme. License: GPL v2+.
 
-A Rust port (`edax-rs`) is under active development in `edax-rs/`.
+Multi-language ports are available:
+- **Rust** (`edax-rs/`): Full-featured port with search, evaluation, and parallel search
+- **Swift** (`swift/`): Core engine port (Board, Bit, Perft)
+- **Kotlin** (`kotlin/`): Core engine port (Board, Bit, Perft)
+
+See `docs/MULTI_LANGUAGE_PORT.md` for detailed documentation.
 
 ## C Version Build
 
@@ -53,6 +58,10 @@ src/           # C source and headers (~74 files), Makefile, NMakefile (MSVC)
 include/       # Compatibility headers (stdbool.h)
 problem/       # OBF test problem files (fforum-*.obf)
 data/          # eval.dat (evaluation weights, 13.9 MB)
+test/          # C test suite (test_minimal.c, test_framework.h)
+docs/          # Documentation (MULTI_LANGUAGE_PORT.md)
+swift/         # Swift port (Package.swift, Sources/, Tests/)
+kotlin/        # Kotlin port (build.gradle.kts, src/)
 edax-rs/       # Rust port (workspace)
 ├── Cargo.toml
 ├── Cargo.lock
@@ -109,14 +118,36 @@ Problem solving with OBF files in `problem/` directory:
 
 Performance testing (perft) and benchmarks are built into the binary via `-count` and `-bench` flags.
 
+Standalone C test suite:
+
+```bash
+cd test
+gcc -std=c99 -Wall -Wextra -O2 -o test_minimal test_minimal.c
+./test_minimal                          # 89 tests
+```
+
 ### Rust version
 
 ```bash
 cd edax-rs
-cargo test                              # all 152 tests
-cargo test -p edax-core --lib           # unit tests only (134)
+cargo test                              # all 185 tests
+cargo test -p edax-core --lib           # unit tests only (167)
 cargo test -p edax-core --test integration  # integration tests only (18)
 cargo test -p edax-core --lib eval      # eval module tests only
+```
+
+### Swift version
+
+```bash
+cd swift
+swift test                              # 50+ tests
+```
+
+### Kotlin version
+
+```bash
+cd kotlin
+gradle test                             # 50+ tests
 ```
 
 ## Dependencies
